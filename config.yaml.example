@@ -1,0 +1,23 @@
+# Telegram Bot Token (from @BotFather)
+bot_token: "YOUR_BOT_TOKEN_HERE"
+
+# Telegram User IDs allowed to use this bot
+# Get your ID by sending /id to the bot (add yourself first with a temporary open config)
+# Or use @userinfobot on Telegram
+allowed_users:
+  - 123456789
+
+# Default working directory for Claude Code CLI
+default_work_dir: "/Users/you/projects"
+
+# Path to claude CLI binary (default: "claude")
+claude_path: "claude"
+
+# Claude CLI execution timeout in seconds (default: 300)
+timeout: 300
+
+# Telegram message max length (default: 4096)
+max_message_len: 4096
+
+# Stream update interval in milliseconds (default: 500)
+update_interval_ms: 500

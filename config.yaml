@@ -1,0 +1,23 @@
+# Telegram Bot Token
+bot_token: "YOUR_BOT_TOKEN_HERE"
+
+# Allowed Telegram User IDs
+# Get your ID by sending /id to the bot after temporarily removing this restriction,
+# or message @userinfobot on Telegram
+allowed_users:
+  - YOUR_USER_ID_HERE
+
+# Default working directory for Claude Code
+default_work_dir: "/Users/chenchen"
+
+# Claude CLI binary path
+claude_path: "claude"
+
+# Execution timeout (seconds)
+timeout: 900
+
+# Telegram message max length
+max_message_len: 4096
+
+# Stream update interval (ms) - min 1500 to avoid Telegram rate limits
+update_interval_ms: 1500

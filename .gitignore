@@ -1,0 +1,28 @@
+# Build output
+build/
+
+# Claude directory
+.claude/
+
+# Config files with secrets
+config.yaml
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+bot.log
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
