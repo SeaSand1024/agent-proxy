@@ -1,5 +1,5 @@
-# Telegram Bot Token
-bot_token: "8678870172:AAGC7jg0opCBRzpVV3fTJn20n4c5d9sOelk"
+# Telegram Bot Token (use TELEGRAM_BOT_TOKEN env var instead)
+bot_token: ""
 
 # Allowed Telegram User IDs
 # Get your ID by sending /id to the bot after temporarily removing this restriction,
