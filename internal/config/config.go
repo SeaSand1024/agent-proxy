@@ -17,6 +17,7 @@ type Config struct {
 	Timeout        int     `yaml:"timeout"`
 	MaxMessageLen  int     `yaml:"max_message_len"`
 	UpdateInterval int     `yaml:"update_interval_ms"`
+	ProxyURL       string  `yaml:"proxy_url"`
 }
 
 func Load(path string) (*Config, error) {
@@ -53,6 +54,9 @@ func Load(path string) (*Config, error) {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Timeout = n
 		}
+	}
+	if v := os.Getenv("PROXY_URL"); v != "" {
+		cfg.ProxyURL = v
 	}
 
 	if cfg.BotToken == "" {

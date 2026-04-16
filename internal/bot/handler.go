@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -44,6 +45,178 @@ var claudeSlashCommands = map[string]bool{
 	"tencent-tat-ops": true, "tencenttatops": true, "tencent_tat_ops": true,
 	"ralph": true, "heapdump": true,
 	"ralph-loop:help": true, "ralph-loop:cancel-ralph": true, "ralph-loop:ralph-loop": true,
+}
+
+// switchIntentPrefixes matches natural language phrases indicating session switch.
+var switchIntentPrefixes = []string{
+	"切到", "切换到", "用那个", "继续那个", "回到", "换成", "想用",
+	"switch to", "resume that", "continue that", "use that",
+}
+
+// trailingFillers are trailing words to strip from the query.
+var trailingFillers = []string{"那个", "的", "会话", "session", "的会话"}
+
+// detectSwitchIntent checks if text expresses intent to switch session.
+// Returns the query to search for and true if switch intent detected.
+func detectSwitchIntent(text string) (query string, isSwitch bool) {
+	text = strings.TrimSpace(text)
+	for _, prefix := range switchIntentPrefixes {
+		idx := strings.Index(text, prefix)
+		if idx >= 0 {
+			query = text[idx+len(prefix):]
+			// Strip trailing fillers
+			for {
+				changed := false
+				for _, f := range trailingFillers {
+					if strings.HasSuffix(query, f) {
+						query = strings.TrimSuffix(query, f)
+						changed = true
+					}
+				}
+				if !changed {
+					break
+				}
+			}
+			query = strings.TrimSpace(query)
+			if query != "" {
+				return query, true
+			}
+		}
+	}
+	return "", false
+}
+
+// fuzzyMatchSession matches query against session entries.
+// Returns best match, all matches with score > 0.3.
+func fuzzyMatchSession(query string, sessions []claude.SessionEntry) (best *claude.SessionEntry, matches []*claude.SessionEntry) {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return nil, nil
+	}
+
+	var scored []struct {
+		entry *claude.SessionEntry
+		score float64
+	}
+
+	for i := range sessions {
+		score := computeMatchScore(query, &sessions[i])
+		if score > 0.3 {
+			scored = append(scored, struct {
+				entry *claude.SessionEntry
+				score float64
+			}{&sessions[i], score})
+		}
+	}
+
+	sort.Slice(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+
+	if len(scored) > 0 {
+		best = scored[0].entry
+		for i := range scored {
+			matches = append(matches, scored[i].entry)
+		}
+	}
+	return best, matches
+}
+
+// computeMatchScore calculates how well query matches a session.
+// Uses substring matching, word boundary hits, and prefix matching.
+func computeMatchScore(query string, entry *claude.SessionEntry) float64 {
+	summary := strings.ToLower(entry.Summary)
+	id := strings.ToLower(entry.ID)
+
+	// Exact substring (highest weight)
+	if strings.Contains(summary, query) || strings.Contains(id, query) {
+		return 0.9
+	}
+
+	// Query words must all appear in summary
+	words := strings.Fields(query)
+	if len(words) > 1 {
+		allFound := true
+		for _, w := range words {
+			if !strings.Contains(summary, w) && !strings.Contains(id, w) {
+				allFound = false
+				break
+			}
+		}
+		if allFound {
+			return 0.8
+		}
+	}
+
+	// Prefix match on words
+	queryWords := strings.Fields(query)
+	matchCount := 0
+	for _, qw := range queryWords {
+		if strings.HasPrefix(summary, qw) || strings.HasPrefix(id, qw) {
+			matchCount++
+		} else if strings.Contains(summary, qw) || strings.Contains(id, qw) {
+			matchCount++
+		}
+	}
+	if matchCount > 0 {
+		return 0.3 + 0.3*float64(matchCount)/float64(len(queryWords))
+	}
+
+	// Check if query is a prefix of summary or ID
+	if strings.HasPrefix(summary, query) || strings.HasPrefix(id, query) {
+		return 0.7
+	}
+
+	return 0
+}
+
+// handleSwitchSession handles natural language session switching.
+func (h *Handler) handleSwitchSession(ctx context.Context, chatID int64, userID int64, query string) {
+	sess := h.sessions.Get(userID)
+	sessions, err := h.executor.ListSessions(ctx, sess.WorkDir)
+	if err != nil || len(sessions) == 0 {
+		h.sender.SendText(chatID, "📂 没有找到可切换的会话。")
+		return
+	}
+
+	best, matches := fuzzyMatchSession(query, sessions)
+
+	if best == nil {
+		h.sender.SendText(chatID, fmt.Sprintf("🔍 没有找到与「%s」相关的会话，试试更具体的描述？", query))
+		return
+	}
+
+	displayID := best.ID
+	if len(displayID) > 8 {
+		displayID = displayID[:8]
+	}
+
+	// High confidence match — switch directly
+	if len(matches) == 1 || best.Summary != "" && strings.Contains(strings.ToLower(best.Summary), strings.ToLower(query)) {
+		h.sender.SendText(chatID, fmt.Sprintf("🔄 切换到: %s", best.Summary))
+		h.handleResumeWithSession(ctx, chatID, userID, best.ID)
+		return
+	}
+
+	// Multiple candidates — show picker
+	text := fmt.Sprintf("🔍 找到多个与「%s」相关的会话：\n\n", query)
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(matches)+1)
+	for _, m := range matches {
+		summary := m.Summary
+		if summary == "" {
+			summary = m.ID[:8]
+		} else if len(summary) > 40 {
+			summary = summary[:37] + "..."
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(summary, callbackDataPrefix+"resume:"+m.ID),
+		))
+	}
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("❌ 取消", callbackDataPrefix+"cancel:"+sess.ID),
+	))
+
+	h.sender.SendInlineKeyboard(chatID, text, rows)
 }
 
 func (h *Handler) Handle(ctx context.Context, update tgbotapi.Update) {
@@ -205,6 +378,12 @@ func (h *Handler) Handle(ctx context.Context, update tgbotapi.Update) {
 		// Unknown slash command → forward raw text to Claude
 	}
 
+	// === Natural language session switch ===
+	if query, ok := detectSwitchIntent(text); ok {
+		h.handleSwitchSession(ctx, chatID, userID, query)
+		return
+	}
+
 	h.handleClaudeMessage(ctx, chatID, userID, text)
 }
 
@@ -343,20 +522,33 @@ func (h *Handler) HandleCallback(ctx context.Context, cq tgbotapi.CallbackQuery)
 func (h *Handler) handleResumeWithSession(ctx context.Context, chatID int64, userID int64, sessionID string) {
 	sess := h.sessions.Get(userID)
 	h.executor.KillSession(sess.ID)
-	sess.ID = sessionID
-	h.sender.SendText(chatID, "▶️ Resuming session: "+sessionID[:8]+"...")
-	h.handleClaudeMessage(ctx, chatID, userID, "-c")
+	h.sessions.NewSession(userID) // fresh Bot session
+	displayID := sessionID
+	if len(displayID) > 8 {
+		displayID = displayID[:8]
+	}
+	h.sender.SendText(chatID, "▶️ Resuming session: "+displayID+"...")
+	h.handleClaudeMessageWithResume(ctx, chatID, userID, "hi", sessionID)
 }
 
 // handleFromPR resumes from a PR.
 func (h *Handler) handleFromPR(ctx context.Context, chatID int64, userID int64, prRef string) {
 	h.sender.SendText(chatID, "📋 Resuming from PR: "+prRef)
-	h.handleClaudeMessage(ctx, chatID, userID, "--from-pr "+prRef)
+	// --from-pr is a CLI flag, not a message to Claude. Need to handle via subcommand.
+	h.handleCLISubcommand(ctx, chatID, userID, "--from-pr "+prRef)
 }
 
 // handleContinue continues the most recent conversation.
 func (h *Handler) handleContinue(ctx context.Context, chatID int64, userID int64) {
-	h.handleClaudeMessage(ctx, chatID, userID, "-c")
+	// Find the most recent session to resume
+	sess := h.sessions.Get(userID)
+	sessions, err := h.executor.ListSessions(ctx, sess.WorkDir)
+	if err != nil || len(sessions) == 0 {
+		h.sender.SendText(chatID, "📂 No saved sessions found.")
+		return
+	}
+	// Resume the most recent one
+	h.handleResumeWithSession(ctx, chatID, userID, sessions[0].ID)
 }
 
 func minInt(a, b int) int {
@@ -368,7 +560,14 @@ func minInt(a, b int) int {
 
 // handleContinueOrPick shows a session picker if multiple sessions exist, otherwise continues.
 func (h *Handler) handleContinueOrPick(ctx context.Context, chatID int64, userID int64) {
-	h.handleClaudeMessage(ctx, chatID, userID, "-c")
+	sess := h.sessions.Get(userID)
+	sessions, err := h.executor.ListSessions(ctx, sess.WorkDir)
+	if err != nil || len(sessions) == 0 {
+		h.sender.SendText(chatID, "📂 No saved sessions found.")
+		return
+	}
+	// Resume the most recent one
+	h.handleResumeWithSession(ctx, chatID, userID, sessions[0].ID)
 }
 
 // handleResumeOrPick shows a session picker for the user to choose.
@@ -404,10 +603,10 @@ func (h *Handler) handleResumeOrPick(ctx context.Context, chatID int64, userID i
 // handleFromPRCommand handles /frompr command with optional PR ref.
 func (h *Handler) handleFromPRCommand(ctx context.Context, chatID int64, userID int64, prRef string) {
 	if prRef == "" {
-		h.sender.SendText(chatID, "📋 *Usage:* `/frompr <PR number or URL>`\n\nExample: `/frompr 123` or `/frompr https://github.com/user/repo/pull/456`")
+		h.sender.SendText(chatID, "Usage: /frompr <PR number or URL>")
 		return
 	}
-	h.handleClaudeMessage(ctx, chatID, userID, "--from-pr "+prRef)
+	h.handleFromPR(ctx, chatID, userID, prRef)
 }
 
 // handleSessionsCommand shows a list of available sessions.
@@ -442,6 +641,11 @@ func (h *Handler) handleSessionsCommand(ctx context.Context, chatID int64, userI
 
 // handleClaudeMessage sends the user's message to Claude and streams the response.
 func (h *Handler) handleClaudeMessage(ctx context.Context, chatID int64, userID int64, text string) {
+	h.handleClaudeMessageWithResume(ctx, chatID, userID, text, "")
+}
+
+// handleClaudeMessageWithResume sends a message, optionally resuming a Claude session.
+func (h *Handler) handleClaudeMessageWithResume(ctx context.Context, chatID int64, userID int64, text string, resumeSessionID string) {
 	sess := h.sessions.Get(userID)
 
 	if !sess.Mu.TryLock() {
@@ -465,10 +669,11 @@ func (h *Handler) handleClaudeMessage(ctx context.Context, chatID int64, userID 
 	errCh := make(chan error, 1)
 	go func() {
 		err := h.executor.Execute(ctx, claude.ExecRequest{
-			Message:   text,
-			SessionID: sess.ID,
-			WorkDir:   sess.WorkDir,
-			AddDirs:   sess.AddDirs,
+			Message:         text,
+			SessionID:       sess.ID,
+			ResumeSessionID: resumeSessionID,
+			WorkDir:         sess.WorkDir,
+			AddDirs:         sess.AddDirs,
 		}, chunks)
 		close(chunks)
 		errCh <- err

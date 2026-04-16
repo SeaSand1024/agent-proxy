@@ -1,11 +1,11 @@
 # Telegram Bot Token
-bot_token: "YOUR_BOT_TOKEN_HERE"
+bot_token: "8678870172:AAGC7jg0opCBRzpVV3fTJn20n4c5d9sOelk"
 
 # Allowed Telegram User IDs
 # Get your ID by sending /id to the bot after temporarily removing this restriction,
 # or message @userinfobot on Telegram
 allowed_users:
-  - YOUR_USER_ID_HERE
+  - 7047730911
 
 # Default working directory for Claude Code
 default_work_dir: "/Users/chenchen"
@@ -21,3 +21,6 @@ max_message_len: 4096
 
 # Stream update interval (ms) - min 1500 to avoid Telegram rate limits
 update_interval_ms: 1500
+
+# HTTP/SOCKS5 proxy for Telegram API
+proxy_url: "http://127.0.0.1:7890"
